@@ -1909,6 +1909,8 @@
     .ch-day-pop { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 900; display: flex; align-items: center; justify-content: center; padding: 16px; }
     .ch-day-pop-card { background: var(--panel); border-radius: var(--radius); padding: 12px 14px; width: 100%; max-width: 360px; max-height: 80vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
     .ch-day-pop-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .clock-rejected { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; border-radius: 10px;
+      padding: 10px 12px; margin-bottom: 12px; font-size: 13px; line-height: 1.45; }
     .clock-today { font-size: 14px; color: var(--muted); margin-bottom: 10px; }
     .clock-today b { color: var(--text); font-size: 16px; }
     .clock-today.is-in { color: #166534; }
@@ -5726,6 +5728,7 @@
   (function installErrorCapture() {
     const seen = new Set();
     let sent = 0;
+    window._neeReportError = (kind, message, source) => report(kind, message, source, null);
     function report(kind, message, source, stack) {
       try {
         if (!state.user?.token || sent >= 15) return;
@@ -6171,11 +6174,28 @@
   }
 
   // ── JOBS ──
+  // 📶 A slim copy of the job list lives on the phone (owner 2026-11-24) so the
+  // T-Sheets job picker works when the app is opened with no signal. Only what
+  // the picker and city-tax default need — no money.
+  const JOBS_OFFLINE_KEY = "nee_jobs_offline_v1";
+  function jobsOfflineSave(jobs) {
+    try {
+      const slim = (jobs || []).map(j => ({ id: j.id, name: j.name, po: j.po, status: j.status, stage: j.stage,
+        type: j.type, year: j.year, overhead: j.overhead, cityTax: j.cityTax,
+        clockVisibility: j.clockVisibility, prevailingWage: j.prevailingWage }));
+      localStorage.setItem(JOBS_OFFLINE_KEY, JSON.stringify({ at: Date.now(), jobs: slim }));
+    } catch (e) { /* full or blocked storage: the picker just needs signal */ }
+  }
+  function jobsOfflineLoad() {
+    try { const d = JSON.parse(localStorage.getItem(JOBS_OFFLINE_KEY) || "null"); return Array.isArray(d?.jobs) ? d : null; }
+    catch (e) { return null; }
+  }
   async function loadJobs() {
     $("jobsList").innerHTML = `<div class="loading-msg">Loading jobs...</div>`;
     try {
       const d = await apiGet("jobs");
       state.jobs = Array.isArray(d.jobs) ? d.jobs : [];
+      jobsOfflineSave(state.jobs);
       populateYearFilter();
       applyFilters();
       // A fresh job list makes the dashboard's Ready to Invoice / Coming Due
@@ -6203,6 +6223,17 @@
         } catch (e) { /* non-fatal */ }
       }
     } catch(err) {
+      // No signal: fall back to the copy saved on this phone, so the clock's
+      // job picker (and the list) still work. Only when nothing is loaded yet.
+      const saved = !(state.jobs || []).length && !err?.status ? jobsOfflineLoad() : null;
+      if (saved && saved.jobs.length) {
+        state.jobs = saved.jobs;
+        try { populateYearFilter(); applyFilters(); } catch (e) {}
+        $("jobsList").insertAdjacentHTML("afterbegin",
+          `<div class="loading-msg" style="color:#92400e;">📶 No signal — showing the job list saved on this phone.</div>`);
+        try { renderClockPanel(); } catch (e) {}
+        return;
+      }
       $("jobsList").innerHTML = `<div class="loading-msg" style="color:#ff8b7e;">${esc(err.message)}</div>`;
     }
   }
@@ -26780,6 +26811,40 @@
     return "p-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
   }
 
+  // ⚠ Saved punches the server refused. Kept on the phone until the person taps
+  // OK, shown at the top of the clock, and logged so it reaches ☀ This morning.
+  const CLOCK_REJECTED_KEY = "nee_clock_rejected_v1";
+  const CLOCK_ACTION_LABEL = { clockIn: "clock-in", clockOut: "clock-out", clockBreak: "lunch punch", clockSwitch: "switch" };
+  function clockRejected() {
+    try { const a = JSON.parse(localStorage.getItem(CLOCK_REJECTED_KEY) || "[]"); return Array.isArray(a) ? a : []; }
+    catch (e) { return []; }
+  }
+  function clockRejectedAdd(item, e) {
+    const b = item.body || {};
+    const at = b.at || b.startedAt || b.endedAt || null;
+    const t = Date.parse(at || "");
+    const when = Number.isFinite(t)
+      ? new Date(t).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) : "";
+    const label = CLOCK_ACTION_LABEL[item.action] || "punch";
+    const why = String(e?.message || "refused").slice(0, 160);
+    const list = clockRejected();
+    list.push({ label, when, why });
+    try { localStorage.setItem(CLOCK_REJECTED_KEY, JSON.stringify(list.slice(-10))); } catch (x) {}
+    try { window._neeReportError?.("clock", `Saved ${label}${when ? " from " + when : ""} was refused: ${why}`, "T-Sheets offline queue"); } catch (x) {}
+  }
+  window.clockRejectedOk = function () {
+    try { localStorage.removeItem(CLOCK_REJECTED_KEY); } catch (e) {}
+    renderClockPanel();
+  };
+  function clockRejectedHtml() {
+    const list = clockRejected();
+    if (!list.length) return "";
+    return `<div class="clock-rejected">⚠ <b>${list.length === 1 ? "A punch saved with no signal" : list.length + " punches saved with no signal"} couldn't be recorded:</b>
+      ${list.map(r => `<div>· Your ${esc(r.label)}${r.when ? " from " + esc(r.when) : ""} — ${esc(r.why)}</div>`).join("")}
+      <div>Check the <b>Timesheets</b> tab and fix the times, or tell the office.</div>
+      <button type="button" class="btn btn-sm" style="margin-top:6px;" onclick="clockRejectedOk()">OK</button></div>`;
+  }
+
   // Replays queued punches IN ORDER and stops at the first one that can't go
   // through. Order is not optional: a clock-out replayed before its clock-in
   // would be rejected as "not clocked in" and the shift would be lost.
@@ -26799,6 +26864,8 @@
           // (403 clock is off, 409 genuine conflict, 400 bad punch), so drop it
           // rather than wedging the queue behind a punch that can never land.
           console.warn("clock: dropping unreplayable punch", item.action, e.status, e.message);
+          // Tell the person and the owner (owner 2026-11-24) — this was silent.
+          clockRejectedAdd(item, e);
           q.shift(); clockQueueSave(q); changed = true;
           continue;
         }
@@ -27446,6 +27513,7 @@
 
       const onTravel = clockState.open.class === CLOCK_TRAVEL_CLASS;
       el.innerHTML = `
+        ${clockRejectedHtml()}
         <div class="clock-today is-in">🟢 Clocked in · Today <b id="clockToday">${fmtHm(clockTodayMs())}</b></div>
         <div style="font-size:12px; color:var(--muted);">
           ${onTravel ? "🚗 Traveling" : "On the clock"} since ${esc(startedTxt)}${onBreak() ? " · paused" : ""}
@@ -27544,6 +27612,7 @@
       const cls  = clockDraft.cls  || clockClasses()[0];
       const city = clockDraft.city || clockDefaultCityTax(preJob, cls);
       el.innerHTML = `
+        ${clockRejectedHtml()}
         <div class="clock-today">⚪ Clocked out · Today <b>${fmtHm(clockTodayMs())}</b></div>
         ${clockRow("Start time", clockStartLabel(), "start", !!clockDraft.startedAt)}
         ${clockRow("Job", preJob ? (preJob.name || "") : "Tap to choose", "job", !!preJob)}

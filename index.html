@@ -1909,6 +1909,12 @@
     .ch-day-pop { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 900; display: flex; align-items: center; justify-content: center; padding: 16px; }
     .ch-day-pop-card { background: var(--panel); border-radius: var(--radius); padding: 12px 14px; width: 100%; max-width: 360px; max-height: 80vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
     .ch-day-pop-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .clock-today { font-size: 14px; color: var(--muted); margin-bottom: 10px; }
+    .clock-today b { color: var(--text); font-size: 16px; }
+    .clock-today.is-in { color: #166534; }
+    .clock-btn-travel { background: #fff7ed !important; color: #9a3412 !important; border: 1px solid #fdba74 !important; margin-top: 8px; }
+    .hd-clock-row { display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+    .hd-clock-row:last-child { border-bottom: none; }
     .ch-tile-click { cursor: pointer; }
     .ch-tile-click:hover { border-color: var(--accent); }
     .ch-more { color: var(--accent); font-weight: 800; }
@@ -6511,6 +6517,7 @@
     // Re-read at most every 5 minutes unless forced; render the cache meanwhile.
     hdLoadMorning(force);   // ☀ its own fetch; fills #hdMorning when it lands
     if (force || !_hdBoard) hdLoadBoard();   // 📣 likewise, fills #hdBoard
+    hdLoadClock(force);                       // 🟢 likewise, fills #hdClock
     if (_hdCache && !force && Date.now() - _hdAt < 5 * 60 * 1000) { renderHomeDash(); return; }
     if (!_hdCache) box.innerHTML = `<div class="hd-empty" style="padding:40px;">Loading dashboard…</div>`;
     if (_hdBusy) return _hdBusy;
@@ -6857,6 +6864,37 @@
         <div class="t">${esc(it.body)}<small>${esc([it.by, when].filter(Boolean).join(" · "))}</small></div>
         ${admin ? `<button class="btn btn-sm" type="button" title="Take it down (the crew stops seeing it)" onclick="hdBoardArchive('${esc(it.id)}')">✕</button>` : ""}
       </div>`;
+  }
+
+  // 🟢 On the clock (owner 2026-11-24): who is punched in right now, on the
+  // admin Overview. Strict admin only — clockRoster is _ADMIN. The full screen
+  // (punch people in/out, today's finished shifts) is 🟢 Who's Working.
+  let _hdClock = null, _hdClockAt = 0;
+  function hdLoadClock(force) {
+    if (!isStrictAdminRole()) return;
+    if (_hdClock && !force && Date.now() - _hdClockAt < 60 * 1000) return;
+    _hdClockAt = Date.now();
+    apiGet("clockRoster").then(d => { _hdClock = d; }, e => { _hdClock = { _err: e.message }; })
+      .finally(() => { const el = $("hdClock"); if (el) el.innerHTML = hdClockHtml(); });
+  }
+  function hdClockHtml() {
+    const d = _hdClock;
+    const head = (n) => `<h3><span>🟢 On the clock</span>${n != null ? `<span class="hd-count">${n}</span>` : ""}</h3>`;
+    if (!d) return head() + `<div class="hd-empty">Loading…</div>`;
+    if (d._err) return head() + `<div class="hd-empty" style="color:var(--red);">Couldn't load: ${esc(d._err)}</div>`;
+    if (!d.enabled) return head() + `<div class="hd-empty">The time clock is switched off.</div>`;
+    const on = d.onClock || [];
+    const tm = (t) => new Date(Date.parse(t)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const rows = on.map(r => {
+      const travel = r.class === CLOCK_TRAVEL_CLASS;
+      const lunch = !!r.break_started_at;
+      return `<div class="hd-clock-row"><span><b>${esc(r.name)}</b> · ${travel ? "🚗 " : ""}${esc(r.job_name || "No job")}${lunch ? " · 🥪 lunch" : ""}</span>
+        <span style="color:var(--muted); white-space:nowrap;">in ${esc(tm(r.started_at))} · ${fmtHm(wwWorkedMs(r))}</span></div>`;
+    }).join("") || `<div class="hd-empty">Nobody is clocked in.</div>`;
+    const done = new Set((d.today || []).map(r => r.employee_id).filter(id => !on.some(o => o.employee_id === id))).size;
+    return head(on.length) + rows + `<div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; font-size:12px; color:var(--muted);">
+        <span>${done ? `${done} more clocked out earlier today` : ""}</span>
+        <button class="btn btn-ghost btn-sm" type="button" onclick="openWhosWorking()">Open Who's Working ›</button></div>`;
   }
 
   // 📣 Crew board on the ADMIN Overview: post + take down. Own fetch, like ☀.
@@ -7264,6 +7302,7 @@
       <div class="hd-grid">
         <div class="hd-col">${card("⏱ Awarded jobs — hours worked vs target", awardedCount, barsHtml, true)}</div>
         <div class="hd-col">
+          ${isStrictAdminRole() ? `<div class="hd-card" id="hdClock">${hdClockHtml()}</div>` : ""}
           ${card("💼 Office Work", null, paperHtml)}
           <div class="hd-card" id="hdBoard">${hdBoardHtml()}</div>
           <div class="hd-card"><h3><span>${calTitle}</span></h3>${calHtml}</div>
@@ -26858,6 +26897,24 @@
     return Math.max(0, ms);
   }
 
+  // 📅 Worked TODAY (owner 2026-11-24): every finished punch that started today
+  // plus the shift running now. A Switch closes a segment and restarts the big
+  // timer, so this is the number that answers "how long have I worked today".
+  function clockTodayMs() {
+    const today = new Date().toDateString();
+    let ms = 0;
+    (clockState.recent || []).forEach(p => {
+      if (!p.ended_at) return;
+      const st = Date.parse(p.started_at);
+      if (Number.isFinite(st) && new Date(st).toDateString() === today) ms += (Number(p.duration_seconds) || 0) * 1000;
+    });
+    return ms + workedMs();
+  }
+  function fmtHm(ms) {
+    const m = Math.max(0, Math.floor(ms / 60000));
+    return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+  }
+
   // How long the CURRENT break has been running (0 when working).
   function breakMs() {
     const bs = Date.parse(clockState.open?.break_started_at || "");
@@ -26884,6 +26941,8 @@
       renderClockPill();
       const el = $("clockElapsed");
       if (el) el.textContent = fmtElapsed(workedMs());
+      const td = $("clockToday");
+      if (td) td.textContent = fmtHm(clockTodayMs());
       const bl = $("clockBreakLine");
       if (bl) {
         const taken = (Number(clockState.open?.break_seconds) || 0) * 1000 + breakMs();
@@ -27365,9 +27424,11 @@
         ? `On lunch — ${fmtElapsed(breakMs())}`
         : (takenMs > 0 ? `Breaks today: ${fmtElapsed(takenMs)}` : "");
 
+      const onTravel = clockState.open.class === CLOCK_TRAVEL_CLASS;
       el.innerHTML = `
+        <div class="clock-today is-in">🟢 Clocked in · Today <b id="clockToday">${fmtHm(clockTodayMs())}</b></div>
         <div style="font-size:12px; color:var(--muted);">
-          On the clock since ${esc(startedTxt)}${onBreak() ? " · paused" : ""}
+          ${onTravel ? "🚗 Traveling" : "On the clock"} since ${esc(startedTxt)}${onBreak() ? " · paused" : ""}
           ${clockState.open.original_started_at
             ? ` · <span title="Punched at ${esc(new Date(Date.parse(clockState.open.original_started_at)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))}">adjusted</span>`
             : ""}
@@ -27388,6 +27449,8 @@
           : `<!-- Switch is small and shares the row now. It was a full-width bar
                   reading "Switch — I'm on site", which took as much space as
                   Clock Out for something you tap once a day. -->
+             <button class="clock-btn clock-btn-travel" style="margin-bottom:8px;" onclick="clockQuickTravel()">${onTravel
+                 ? "🔨 Arrived — back to work" : "🚗 Start Travel"}</button>
              <div class="clock-btn-row">
                <button class="clock-btn clock-btn-switch clock-btn-sm" onclick="clockSwitchSheet()">Switch</button>
                <button class="clock-btn clock-btn-break clock-btn-sm" onclick="clockBreak(true)">Lunch</button>
@@ -27461,7 +27524,7 @@
       const cls  = clockDraft.cls  || clockClasses()[0];
       const city = clockDraft.city || clockDefaultCityTax(preJob, cls);
       el.innerHTML = `
-        <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">You're clocked out.</div>
+        <div class="clock-today">⚪ Clocked out · Today <b>${fmtHm(clockTodayMs())}</b></div>
         ${clockRow("Start time", clockStartLabel(), "start", !!clockDraft.startedAt)}
         ${clockRow("Job", preJob ? (preJob.name || "") : "Tap to choose", "job", !!preJob)}
         ${clockRow("Class", cls, "class", false)}
@@ -27469,6 +27532,7 @@
                    "city", false, cls === CLOCK_TRAVEL_CLASS)}
         <div style="height:14px;"></div>
         <button class="clock-btn clock-btn-in" onclick="clockIn()">Clock In</button>
+        <button class="clock-btn clock-btn-travel" onclick="clockStartTravel()">🚗 Start Travel</button>
         ${countsHtml}${queuedHtml}
       `;
     }
@@ -27900,27 +27964,33 @@
   }
   window.clockSwitchSyncCity = clockSwitchSyncCity;
 
-  async function clockSwitchGo() {
+  // quick = { cls, city } from the 🚗 Travel / 🔨 Arrived button: same job,
+  // class change only (jobId "" keeps the current job on the server).
+  async function clockSwitchGo(quick) {
     if (clockBusy || !clockState.open) return;
     clockBusy = true;
     const err = $("clockSwitchErr");
     try {
-      const body = {
+      const body = quick ? { class: quick.cls, jobId: "", cityTaxes: quick.city } : {
         class: $("clockSwitchClass")?.value,
         // The job you're moving to — office in the morning, site after.
         jobId: clockEditPick.jobId || null,
         cityTaxes: $("clockSwitchCity")?.value || null,
+      };
+      Object.assign(body, {
         // A NEW cycle id: the segment being closed keeps the old one, and the
         // segment being opened needs its own so a later punch-out matches it.
         clientPunchId: newPunchId(),
         at: new Date().toISOString(),
-      };
+      });
       try {
         const d = await apiPost("clockSwitch", body);
         if (d.open) clockState.open = { ...d.open };
         clockSwitchShown = false;
         showAppToast(`${d.closed?.class || "Time"} banked — now on ${d.open?.class || body.class}.`);
         clockLocalSave(clockState.open);   // the NEW segment is now the open shift
+        // The closed segment joins today's total once the list reloads.
+        setTimeout(() => refreshClock().catch(() => {}), 300);
       } catch (e) {
         if (e?.status) { if (err) err.textContent = e.message || "Couldn't switch."; return; }
         // Offline: queue it and apply the same effect locally, so the screen shows
@@ -27936,7 +28006,34 @@
       renderClockPill(); renderClockPanel(); tickClock();
     } finally { clockBusy = false; }
   }
-  window.clockSwitchGo = clockSwitchGo;
+  window.clockSwitchGo = () => clockSwitchGo();
+
+  // 🚗 Travel (owner 2026-11-24). Travel is its own class so it is paid at the
+  // normal rate on a prevailing-wage job (db/schema/106) and is never city-taxed.
+  // The class you were on before travel is remembered for 🔨 Arrived.
+  const CLOCK_LAST_WORK_KEY = "nee_clock_last_work_class";
+  window.clockQuickTravel = function () {
+    const o = clockState.open; if (!o) return;
+    if (o.class === CLOCK_TRAVEL_CLASS) {
+      let back = ""; try { back = localStorage.getItem(CLOCK_LAST_WORK_KEY) || ""; } catch (e) {}
+      const list = clockClasses();
+      if (!list.includes(back)) back = list.find(c => c !== CLOCK_TRAVEL_CLASS) || list[0];
+      const job = (state.jobs || []).find(j => (j.name || "") === (o.job_name || ""));
+      clockSwitchGo({ cls: back, city: clockDefaultCityTax(job, back) });
+    } else {
+      try { localStorage.setItem(CLOCK_LAST_WORK_KEY, o.class || ""); } catch (e) {}
+      clockSwitchGo({ cls: CLOCK_TRAVEL_CLASS, city: "A No Tax" });
+    }
+  };
+  // Clocked out: clock in straight onto Travel for the job picked above.
+  window.clockStartTravel = function () {
+    if (clockDraft.cls && clockDraft.cls !== CLOCK_TRAVEL_CLASS) {
+      try { localStorage.setItem(CLOCK_LAST_WORK_KEY, clockDraft.cls); } catch (e) {}
+    }
+    const keep = clockDraft.cls;
+    clockDraft.cls = CLOCK_TRAVEL_CLASS;
+    Promise.resolve(clockIn()).finally(() => { clockDraft.cls = keep === CLOCK_TRAVEL_CLASS ? "" : keep; });
+  };
 
   // The punch-out sheet is deliberately short — it stands between a person and
   // going home. Job and class carry over from the punch-in, so this only confirms

@@ -6875,7 +6875,10 @@
     if (_hdClock && !force && Date.now() - _hdClockAt < 60 * 1000) return;
     _hdClockAt = Date.now();
     apiGet("clockRoster").then(d => { _hdClock = d; }, e => { _hdClock = { _err: e.message }; })
-      .finally(() => { const el = $("hdClock"); if (el) el.innerHTML = hdClockHtml(); });
+      .finally(() => {
+        const el = $("hdClock"); if (el) el.innerHTML = hdClockHtml();
+        const mh = $("mhClockBoard"); if (mh) mh.innerHTML = hdClockHtml();
+      });
   }
   function hdClockHtml() {
     const d = _hdClock;
@@ -26679,6 +26682,13 @@
     // Whose clock this is, at the top (owner 2026-11-23) — phones get handed around.
     const who = $("mhWho");
     if (who) who.textContent = state.user?.name ? `👤 ${state.user.name}` : "";
+    // 🟢 On the clock under the clock, for the owner (owner 2026-11-24).
+    const board = $("mhClockBoard");
+    if (board) {
+      const show = isStrictAdminRole();
+      board.classList.toggle("hidden", !show);
+      if (show) { board.innerHTML = hdClockHtml(); hdLoadClock(true); }
+    }
     pushBackEntry("myHours", () => { $("myHoursModal").style.display = "none"; });
     fetchAndRenderMyHoursTiles();
     refreshClock().catch(() => {});
@@ -37206,6 +37216,8 @@
 
       <div id="mhTabClock">
         <div id="clockPanel" class="clock-panel hidden"></div>
+        <!-- 🟢 On the clock — strict admin only, filled by hdLoadClock. -->
+        <div id="mhClockBoard" class="hd-card hidden" style="margin-top:12px;"></div>
       </div>
 
       <div id="mhTabTimesheets" class="hidden">

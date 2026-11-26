@@ -436,7 +436,8 @@
       background: none; border: none; color: var(--accent);
       font-size: 14px; font-weight: 600; cursor: pointer; padding: 0;
     }
-    .clock-drill-head input, .clock-panel input[type="text"] {
+    input.clock-job-search { scroll-margin-top: 12px; }
+    .clock-drill-head input, .clock-panel input[type="text"], input.clock-job-search {
       width: 100%; padding: 9px 10px; font-size: 14px;
       border: 1px solid var(--line); border-radius: 8px;
     }
@@ -27229,6 +27230,11 @@
   }
   window.renderClockJobList = renderClockJobList;
 
+  // The keyboard covers the bottom half of a phone, so bring the search box to
+  // the top once it has opened — the job list then sits between it and the keys.
+  window.clockSearchFocus = function (el) {
+    setTimeout(() => { try { el.scrollIntoView({ block: "start", behavior: "smooth" }); } catch (e) {} }, 350);
+  };
   function clockSearchJobs(v, scope = "in") {
     clockPickState(scope).search = v;
     renderClockJobList(scope);
@@ -27566,7 +27572,7 @@
         <div id="clockSwitchSheet" class="${clockSwitchShown ? "" : "hidden"}" style="margin-top:12px; border-top:1px solid var(--line); padding-top:10px;">
           ${clockSwitchShown ? `
           <label class="clock-field">Job</label>
-          <input type="text" placeholder="Search jobs…" autocomplete="off"
+          <input type="text" class="clock-job-search" placeholder="Search jobs…" autocomplete="off" onfocus="clockSearchFocus(this)"
                  value="${esc(clockEditPick.search)}" oninput="clockSearchJobs(this.value,'edit')" />
           <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:7px 0;">
             <input type="checkbox" ${clockEditPick.allStatuses ? "checked" : ""}
@@ -27802,14 +27808,14 @@
     return `
       <div style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px;">
         <label class="clock-field">Job</label>
-        <input type="text" placeholder="Search jobs…" autocomplete="off"
+        <input type="text" class="clock-job-search" placeholder="Search jobs…" autocomplete="off" onfocus="clockSearchFocus(this)"
                value="${esc(clockEditPick.search)}" oninput="clockSearchJobs(this.value,'edit')" />
         <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:7px 0;">
           <input type="checkbox" ${clockEditPick.allStatuses ? "checked" : ""}
                  onchange="clockToggleAllJobs(this.checked,'edit')" />
-          Show every job (not just awarded / ready to invoice / completed)
+          Show every job
         </label>
-        <div id="clockJobListEdit" class="clock-job-list"></div>
+        <div id="clockJobListEdit" class="clock-job-list" style="max-height:30vh;"></div>
         <div class="clock-note">Tap the highlighted job again to clear it.</div>
         <label class="clock-field">Class
           <select id="clockEditOpenClass" onchange="clockEditOpenSyncCity()">${
@@ -27846,14 +27852,14 @@
           <input id="clockEditEnd" type="datetime-local" value="${esc(toLocalInput(p.ended_at))}" />
         </label>
         <label class="clock-field">Job</label>
-        <input type="text" placeholder="Search jobs…" autocomplete="off"
+        <input type="text" class="clock-job-search" placeholder="Search jobs…" autocomplete="off" onfocus="clockSearchFocus(this)"
                value="${esc(clockEditPick.search)}" oninput="clockSearchJobs(this.value,'edit')" />
         <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:7px 0;">
           <input type="checkbox" ${clockEditPick.allStatuses ? "checked" : ""}
                  onchange="clockToggleAllJobs(this.checked,'edit')" />
-          Show every job (not just awarded / ready to invoice / completed)
+          Show every job
         </label>
-        <div id="clockJobListEdit" class="clock-job-list"></div>
+        <div id="clockJobListEdit" class="clock-job-list" style="max-height:30vh;"></div>
         <div class="clock-note">Tap the highlighted job again to clear it.</div>
         <label class="clock-field">Class
           <select id="clockEditClass" onchange="clockEditSyncCity()">${

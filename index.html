@@ -1415,6 +1415,16 @@
     .sl-fix-box .fleet-todo-add { border-top:1px solid var(--line); border-bottom:none; }
     .sl-field { margin-bottom: 8px; }
     .sl-job-combo { position: relative; }
+    .sl-map-view { position: fixed; inset: 0; z-index: 600; background: var(--bg, #fff);
+      display: flex; flex-direction: column; }
+    .sl-map-head { display: flex; align-items: center; gap: 14px; padding: 12px 16px;
+      border-bottom: 1px solid var(--line); background: var(--panel); }
+    #slMapCanvas { flex: 1; min-height: 200px; }
+    .sl-map-note { padding: 10px 16px; font-size: 13px; line-height: 1.5; max-height: 30vh; overflow-y: auto;
+      border-top: 1px solid var(--line); background: var(--panel); }
+    .sl-pin { background: #ea580c; color: #fff; border: 2px solid #fff; border-radius: 50%;
+      box-shadow: 0 1px 4px rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 14px; }
     .sl-job-map { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-height: 0; }
     .sl-map-btn { flex: none; display: inline-block; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;
       background: var(--panel); border: 1px solid var(--line-2); color: var(--accent); text-decoration: none; }
@@ -19799,6 +19809,99 @@
     $("slModal").style.display = "none";
   }
   window.closeScissorLifts = closeScissorLifts;
+
+  // ── 🗺 All-lifts map ────────────────────────────────────────────────────
+  // Pins are the JOB SITES from each job's address (looked up once, server
+  // side), not GPS. Leaflet + OpenStreetMap, loaded on first open only, so the
+  // lifts list itself costs nothing extra.
+  let _leafletP = null, _liftMap = null, _liftMapLayer = null;
+  function loadLeaflet() {
+    if (window.L) return Promise.resolve();
+    if (_leafletP) return _leafletP;
+    _leafletP = new Promise((ok, fail) => {
+      const css = document.createElement("link");
+      css.rel = "stylesheet";
+      css.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css";
+      document.head.appendChild(css);
+      const js = document.createElement("script");
+      js.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js";
+      js.onload = () => ok();
+      js.onerror = () => { _leafletP = null; fail(new Error("Couldn't load the map — check your signal.")); };
+      document.head.appendChild(js);
+    });
+    return _leafletP;
+  }
+  function closeLiftMap() {
+    popBackEntry("slMap");
+    $("slMapView").classList.add("hidden");
+  }
+  window.closeLiftMap = closeLiftMap;
+
+  window.openLiftMap = async function () {
+    const view = $("slMapView"), note = $("slMapNote");
+    view.classList.remove("hidden");
+    pushBackEntry("slMap", () => $("slMapView").classList.add("hidden"));
+    note.textContent = "Loading map…";
+    try {
+      let [, d] = await Promise.all([loadLeaflet(), apiGet("liftMap")]);
+      // A first open looks addresses up a few at a time — ask again until done.
+      for (let i = 0; i < 4 && (d.points || []).some(p => p.pending); i++) {
+        note.textContent = "Finding job sites on the map (first time only)…";
+        d = await apiGet("liftMap");
+      }
+      if (!_liftMap) {
+        _liftMap = L.map("slMapCanvas", { zoomControl: true });
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19, attribution: "© OpenStreetMap contributors",
+        }).addTo(_liftMap);
+        _liftMapLayer = L.layerGroup().addTo(_liftMap);
+      }
+      _liftMapLayer.clearLayers();
+
+      // Which lifts are at each job — from the list already on screen.
+      const lifts = liftUi.lifts || [];
+      const byJob = new Map();
+      lifts.filter(l => l.status === "On Job" && l.currentJob).forEach(l => {
+        if (!byJob.has(l.currentJob)) byJob.set(l.currentJob, []);
+        byJob.get(l.currentJob).push(l.name);
+      });
+
+      const pts = (d.points || []).filter(p => p.lat != null && p.lng != null);
+      const bounds = [];
+      for (const p of pts) {
+        const names = byJob.get(p.job) || [];
+        const n = names.length || 1;
+        const icon = L.divIcon({ className: "sl-pin", html: `<span>${n}</span>`, iconSize: [30, 30], iconAnchor: [15, 15] });
+        const dir = "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(p.address);
+        L.marker([p.lat, p.lng], { icon }).addTo(_liftMapLayer).bindPopup(
+          `<b>${esc(p.job)}</b><br>${names.map(esc).join(", ") || "—"}<br>
+           <span style="color:#64748b">${esc(p.address)}</span><br>
+           ${p.approx ? `<span style="color:#b45309">≈ Pin is the town — the exact address wasn't found</span><br>` : ""}
+           <a href="${esc(dir)}" target="_blank" rel="noopener">Open in Google Maps ›</a>`);
+        bounds.push([p.lat, p.lng]);
+      }
+      _liftMap.invalidateSize();
+      if (bounds.length === 1) _liftMap.setView(bounds[0], 13);
+      else if (bounds.length) _liftMap.fitBounds(bounds, { padding: [40, 40] });
+      else _liftMap.setView([40.6, -81.6], 8);   // NE Ohio
+
+      // What isn't pinned, said plainly underneath.
+      const placed = new Set(pts.map(p => p.job));
+      const atShop = lifts.filter(l => l.status === "Available").map(l => l.name);
+      const service = lifts.filter(l => l.status === "Needs Service").map(l => l.name);
+      const noPin = [...byJob.entries()].filter(([job]) => !placed.has(job))
+        .map(([job, names]) => `${names.join(", ")} (${job})`);
+      const pending = (d.points || []).some(p => p.pending);
+      note.innerHTML = [
+        atShop.length ? `🏠 <b>At the shop:</b> ${esc(atShop.join(", "))}` : "",
+        service.length ? `🔧 <b>Out of service:</b> ${esc(service.join(", "))}` : "",
+        noPin.length ? `⚠ <b>Not on the map</b> (job has no address${pending ? ", or still being looked up — reopen in a moment" : ""}): ${esc(noPin.join("; "))}` : "",
+        `<span style="color:var(--muted)">Pins are job addresses, not GPS.</span>`,
+      ].filter(Boolean).join("<br>");
+    } catch (e) {
+      note.textContent = e?.message || "Couldn't load the map.";
+    }
+  };
 
   // ── Lift photos (R2) ──────────────────────────────────────────────────────
   // The photos moved out of Airtable because its attachment URLs expire after a
@@ -38526,6 +38629,15 @@
   </div>
 </div>
 
+<!-- 🗺 All-lifts map (owner 2026-11-26). Leaflet loads only when this opens. -->
+<div id="slMapView" class="sl-map-view hidden">
+  <div class="sl-map-head">
+    <button type="button" class="clock-drill-back" onclick="closeLiftMap()">‹ Back</button>
+    <b>🗺 Where the lifts are</b>
+  </div>
+  <div id="slMapCanvas"></div>
+  <div id="slMapNote" class="sl-map-note"></div>
+</div>
 <div id="slModal" class="sl-modal-backdrop" style="display:none;">
   <div class="sl-modal">
     <div class="sl-modal-header">
@@ -38533,6 +38645,7 @@
       <div style="display:flex; gap:8px; align-items:center;">
         <!-- Admin/office only, wired in loadScissorLifts. Adding equipment to the
              books is not a field action; marking a lift on/off a job still is. -->
+        <button onclick="openLiftMap()" class="btn btn-sm" style="font-size:13px;">🗺 Map</button>
         <button id="slAddBtn" class="btn btn-primary btn-sm" style="display:none; font-size:13px;">+ Add</button>
         <button onclick="closeScissorLifts()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
       </div>

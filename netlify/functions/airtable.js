@@ -7469,6 +7469,90 @@ async function handleApproveExpense(body) {
   return resp(200, { ok: true, updatedId: handle, allocation });
 }
 
+// ── 🗺 All-lifts map (owner 2026-11-26) ─────────────────────────────────
+// One point per job site that has a lift ON it, from the job's address.
+// Coordinates are looked up once per address and kept in geocode_cache
+// (db/schema/108). Google first (GOOGLE_MAPS_API_KEY, if the Geocoding API is
+// enabled on it), OpenStreetMap's free geocoder if Google refuses.
+// Returns undefined on a failure worth retrying (nothing is cached then), and
+// { lat: null } for "looked it up, no such place" (cached, so not re-asked).
+async function geocodeAddress(addr) {
+  const key = process.env.GOOGLE_MAPS_API_KEY;
+  if (key) {
+    try {
+      const r = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(addr)}&key=${key}`,
+        { signal: AbortSignal.timeout(4000) });
+      const d = await r.json();
+      const loc = d?.results?.[0]?.geometry?.location;
+      if (d?.status === "OK" && loc) return { lat: loc.lat, lng: loc.lng, source: "google" };
+      if (d?.status === "ZERO_RESULTS") return { lat: null, lng: null, source: "google" };
+      console.warn(`geocode: Google said ${d?.status} — trying OpenStreetMap`);
+    } catch (e) { console.warn(`geocode: Google failed — ${e?.message || e}`); }
+  }
+  const osm = async (qText) => {
+    const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q=${encodeURIComponent(qText)}`,
+      { headers: { "User-Agent": "field-app-geocoder/1.0" }, signal: AbortSignal.timeout(4000) });
+    if (!r.ok) throw new Error("osm " + r.status);
+    const d = await r.json();
+    return Array.isArray(d) && d[0] ? { lat: Number(d[0].lat), lng: Number(d[0].lon) } : null;
+  };
+  try {
+    const full = await osm(addr);
+    if (full) return { ...full, source: "osm" };
+    // "50941 State Route 379, Summerfield, OH 43788" → "Summerfield, OH 43788"
+    const town = addr.split(",").slice(1).join(",").trim();
+    if (town) {
+      await new Promise(res => setTimeout(res, 1100));   // OSM's 1-per-second rule
+      const t = await osm(town);
+      if (t) return { ...t, source: "osm-town" };
+    }
+    return { lat: null, lng: null, source: "osm" };
+  } catch (e) { return undefined; }
+}
+
+async function handleLiftMap() {
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database." });
+  // Matched on the job NAME, the same as scissorLiftsByJob. A name shared by two
+  // jobs takes the live one (Awarded first), then the newest.
+  const q = await neonQuery(
+    `SELECT DISTINCT ON (l.current_job) l.current_job AS job, j.address_full AS address
+       FROM scissor_lifts l
+       JOIN jobs j ON j.name = l.current_job
+      WHERE l.status = 'On Job' AND COALESCE(l.current_job, '') <> ''
+        AND COALESCE(btrim(j.address_full), '') <> ''
+      ORDER BY l.current_job, (j.status = 'Awarded') DESC, j.created_at DESC NULLS LAST`);
+  if (!q?.rows) return resp(503, { ok: false, error: q?.error || "Database unavailable." });
+
+  const addrs = [...new Set(q.rows.map(r => r.address.trim()))];
+  const c = await neonQuery(
+    `SELECT address, lat, lng, source FROM geocode_cache
+      WHERE address = ANY($1::text[])
+        AND (source = 'google' OR created_at > now() - interval '1 day')`, [addrs]);
+  const geo = new Map((c?.rows || []).map(r => [r.address, r]));
+
+  // Look up what isn't cached yet. Capped per call so a first open can't run
+  // past the function timeout; the rest fill in on the next open.
+  const missing = addrs.filter(a => !geo.has(a)).slice(0, 3);
+  for (const a of missing) {
+    const g = await geocodeAddress(a);
+    if (!g) continue;
+    geo.set(a, { address: a, lat: g.lat, lng: g.lng, source: g.source });
+    await neonQuery(
+      `INSERT INTO geocode_cache (address, lat, lng, source) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (address) DO UPDATE
+         SET lat = EXCLUDED.lat, lng = EXCLUDED.lng, source = EXCLUDED.source, created_at = now()`,
+      [a, g.lat, g.lng, g.source]);
+  }
+
+  const points = q.rows.map(r => {
+    const g = geo.get(r.address.trim());
+    return { job: r.job, address: r.address.trim(),
+             lat: g?.lat ?? null, lng: g?.lng ?? null, pending: !geo.has(r.address.trim()),
+             approx: g?.source === "osm-town" };
+  });
+  return resp(200, { ok: true, points });
+}
+
 async function handleScissorLiftsByJob(params) {
   const { jobName } = params || {};
   if (!jobName) return resp(200, { ok: true, lifts: [] });
@@ -18000,6 +18084,7 @@ export async function handler(event) {
       if (action === "fleetVehicles")      return await handleFleetVehicles();
       if (action === "fleetTodos")         return await handleEquipTodos("fleet");
       if (action === "liftTodos")          return await handleEquipTodos("lifts");
+      if (action === "liftMap")            return await handleLiftMap();
       if (action === "fleetServiceHistory")return await handleFleetServiceHistory(params);
       if (action === "vendors")            return await handleVendors();
       if (action === "companies")          return await handleCompanies();

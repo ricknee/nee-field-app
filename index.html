@@ -1415,6 +1415,11 @@
     .sl-fix-box .fleet-todo-add { border-top:1px solid var(--line); border-bottom:none; }
     .sl-field { margin-bottom: 8px; }
     .sl-job-combo { position: relative; }
+    .sl-job-map { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-height: 0; }
+    .sl-map-btn { flex: none; display: inline-block; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;
+      background: var(--panel); border: 1px solid var(--line-2); color: var(--accent); text-decoration: none; }
+    .sl-map-addr { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sl-map-none { font-size: 12px; color: var(--muted); }
     .sl-job-pop { max-height: 38vh; overflow-y: auto; margin-top: 4px; border: 1px solid var(--line-2);
       border-radius: 10px; background: var(--panel); }
     .sl-job-opt { display: block; width: 100%; text-align: left; background: none; border: 0;
@@ -19539,6 +19544,18 @@
     return html;
   }
   window.liftJobOptions = liftJobOptions;
+  // 🗺 Map of the lift's job site, from the job's address. Opens Google Maps.
+  function liftMapHtml(jobName) {
+    if (!jobName) return "";
+    const job = (state.jobs || []).find(j => j.name === jobName);
+    const addr = String(job?.address || "").trim();
+    if (!addr) return `<span class="sl-map-none">No address on this job</span>`;
+    const url = "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(addr);
+    return `<a class="sl-map-btn" href="${esc(url)}" target="_blank" rel="noopener">🗺 Map</a>
+            <span class="sl-map-addr">${esc(addr)}</span>`;
+  }
+  window.liftMapHtml = liftMapHtml;
+
   // 🔍 One searchable job box on a lift (owner 2026-11-26): type, tap the job.
   const liftJobSel = inp => inp.closest(".sl-field")?.querySelector(".sl-job-input");
   function liftJobPopHtml(inp, q) {
@@ -19586,6 +19603,8 @@
     sel.value = name;
     sel.dispatchEvent(new Event("change"));
     inp.value = name;
+    const mapEl = inp.closest(".sl-field")?.querySelector(".sl-job-map");
+    if (mapEl) mapEl.innerHTML = liftMapHtml(name);
     btn.closest(".sl-job-pop").classList.add("hidden");
     inp.blur();
   };
@@ -20229,6 +20248,7 @@
                        onfocus="liftJobOpen(this)" oninput="liftJobFilter(this)" onblur="liftJobBlur(this)" />
                 <div class="sl-job-pop hidden"></div>
               </div>
+              <div class="sl-job-map">${liftMapHtml(lift.currentJob)}</div>
               <select data-lift-id="${esc(lift.id)}" class="sl-job-input" style="display:none;">
                 <option value="">— None —</option>
                 ${liftJobOptions(lift.currentJob)}

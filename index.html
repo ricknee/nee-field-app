@@ -1414,6 +1414,15 @@
     .sl-fix-head .btn { width:auto; font-size:12px; padding:4px 10px; }
     .sl-fix-box .fleet-todo-add { border-top:1px solid var(--line); border-bottom:none; }
     .sl-field { margin-bottom: 8px; }
+    .sl-job-combo { position: relative; }
+    .sl-job-pop { max-height: 38vh; overflow-y: auto; margin-top: 4px; border: 1px solid var(--line-2);
+      border-radius: 10px; background: var(--panel); }
+    .sl-job-opt { display: block; width: 100%; text-align: left; background: none; border: 0;
+      border-bottom: 1px solid var(--line); padding: 11px 12px; font-size: 15px; color: var(--text); cursor: pointer; }
+    .sl-job-opt.is-on { background: rgba(37,99,235,.08); font-weight: 600; }
+    .sl-job-opt.is-none { color: var(--muted); }
+    .sl-job-grp { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+      color: var(--muted); padding: 8px 12px 4px; }
     .sl-field label { display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
     .sl-field select, .sl-field input { width: 100%; background: var(--panel); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 8px; font-size: 12px; color: var(--text); outline: none; font-family: 'Inter', sans-serif; }
     .sl-field select:focus, .sl-field input:focus { border-color: var(--accent); }
@@ -19530,14 +19539,55 @@
     return html;
   }
   window.liftJobOptions = liftJobOptions;
+  // 🔍 One searchable job box on a lift (owner 2026-11-26): type, tap the job.
+  const liftJobSel = inp => inp.closest(".sl-field")?.querySelector(".sl-job-input");
+  function liftJobPopHtml(inp, q) {
+    const sel = liftJobSel(inp);
+    const tmp = document.createElement("select");
+    tmp.innerHTML = liftJobOptions(sel?.value || "", q);
+    let html = `<button type="button" class="sl-job-opt is-none" onmousedown="event.preventDefault()"
+                  onclick="liftJobPick(this, '')">— None (at the shop) —</button>`;
+    let n = 0;
+    for (const node of tmp.children) {
+      const opts = node.tagName === "OPTGROUP" ? [...node.children] : [node];
+      if (node.tagName === "OPTGROUP") html += `<div class="sl-job-grp">${esc(node.label)}</div>`;
+      for (const o of opts) {
+        n++;
+        html += `<button type="button" class="sl-job-opt${o.value === sel?.value ? " is-on" : ""}"
+                  onmousedown="event.preventDefault()" data-v="${esc(o.value)}"
+                  onclick="liftJobPick(this, this.dataset.v)">${esc(o.textContent)}</button>`;
+      }
+    }
+    if (!n) html += `<div class="sl-job-grp" style="text-transform:none;">No jobs match “${esc(q)}”.</div>`;
+    return html;
+  }
+  window.liftJobOpen = function (inp) {
+    inp.select();
+    const pop = inp.parentElement.querySelector(".sl-job-pop");
+    pop.innerHTML = liftJobPopHtml(inp, "");
+    pop.classList.remove("hidden");
+    setTimeout(() => { try { inp.scrollIntoView({ block: "start", behavior: "smooth" }); } catch (e) {} }, 350);
+  };
   window.liftJobFilter = function (inp) {
-    const sel = inp.parentElement.querySelector(".sl-job-input"); if (!sel) return;
-    const cur = sel.value;
-    sel.innerHTML = `<option value="">— None —</option>` + liftJobOptions(cur, inp.value);
-    const n = sel.querySelectorAll("optgroup option").length;
-    const note = inp.parentElement.querySelector(".sl-job-count");
-    if (note) note.textContent = inp.value.trim()
-      ? (n ? `${n} job${n === 1 ? "" : "s"} match — tap the list below to pick` : "No jobs match") : "";
+    const pop = inp.parentElement.querySelector(".sl-job-pop");
+    pop.innerHTML = liftJobPopHtml(inp, inp.value);
+    pop.classList.remove("hidden");
+  };
+  window.liftJobBlur = function (inp) {
+    setTimeout(() => {
+      inp.parentElement.querySelector(".sl-job-pop")?.classList.add("hidden");
+      inp.value = liftJobSel(inp)?.value || "";   // back to what's actually picked
+    }, 150);
+  };
+  window.liftJobPick = function (btn, name) {
+    const inp = btn.closest(".sl-job-combo").querySelector(".sl-job-filter");
+    const sel = liftJobSel(inp); if (!sel) return;
+    if (name && ![...sel.options].some(o => o.value === name)) sel.add(new Option(name, name));
+    sel.value = name;
+    sel.dispatchEvent(new Event("change"));
+    inp.value = name;
+    btn.closest(".sl-job-pop").classList.add("hidden");
+    inp.blur();
   };
 
   function liftAssigneeOptions(assignees, current) {
@@ -20173,10 +20223,13 @@
             </div>
             <div class="sl-field">
               <label>Current Job</label>
-              <input type="search" class="sl-job-filter" placeholder="🔍 Type to search jobs…" autocomplete="off"
-                     enterkeyhint="done" oninput="liftJobFilter(this)" style="margin-bottom:6px;" />
-              <div class="sl-job-count" style="font-size:12px; color:var(--muted); margin:-2px 0 4px;"></div>
-              <select data-lift-id="${esc(lift.id)}" class="sl-job-input">
+              <div class="sl-job-combo">
+                <input type="text" class="sl-job-filter" value="${esc(lift.currentJob || "")}"
+                       placeholder="🔍 Tap to search jobs…" autocomplete="off" enterkeyhint="done"
+                       onfocus="liftJobOpen(this)" oninput="liftJobFilter(this)" onblur="liftJobBlur(this)" />
+                <div class="sl-job-pop hidden"></div>
+              </div>
+              <select data-lift-id="${esc(lift.id)}" class="sl-job-input" style="display:none;">
                 <option value="">— None —</option>
                 ${liftJobOptions(lift.currentJob)}
               </select>

@@ -1911,6 +1911,8 @@
     .ch-day-pop-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
     .clock-rejected { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; border-radius: 10px;
       padding: 10px 12px; margin-bottom: 12px; font-size: 13px; line-height: 1.45; }
+    .clock-job-head { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+      color: var(--muted); background: var(--bg, #f8fafc); padding: 6px 14px; }
     .clock-today { font-size: 14px; color: var(--muted); margin-bottom: 10px; }
     .clock-today b { color: var(--text); font-size: 16px; }
     .clock-today.is-in { color: #166534; }
@@ -27021,6 +27023,11 @@
 
   // One interval drives both the pill and the panel. It only runs while a shift
   // is open, so a clocked-out phone does no repeating work at all.
+  setInterval(() => {
+    if (clockState.open || clockDraft.startedAt) return;
+    const v = document.querySelector('#clockPanel .clock-setting[data-kind="start"] .clock-setting-value');
+    if (v) v.textContent = clockNowLabel();
+  }, 10000);
   function tickClock() {
     if (clockTicker) { clearInterval(clockTicker); clockTicker = null; }
     if (!clockState.enabled || !clockState.open) return;
@@ -27168,22 +27175,23 @@
     const box = $(clockPickListId(scope)); if (!box) return;
     const { jobs, showingAll } = clockJobPool(scope);
     const q = pick.search.trim().toLowerCase();
-    // Ordered by how likely you are to be standing on it, not alphabetically.
-    // Completed jobs outnumber awarded ones 50 to 15 here, so a plain A-Z sort
-    // would bury every live job under a wall of finished ones.
-    const rank = j => {
-      // Overhead LAST — owner's call. Customer work is what you're normally
-      // looking for, and the overhead buckets are few, always in the same place,
-      // and easy to find by name. Putting them on top made the list open on the
-      // two jobs you least often want.
-      if (j.clockVisibility === "all" || j.clockVisibility === "admin") return 9;
-      const s = String(j.status || "").toLowerCase();
-      return s === "awarded" ? 0 : s === "ready to invoice" ? 1 : s === "completed" ? 2 : 3;
-    };
+    // Owner 2026-11-25: your last 4 jobs on top, then everything A–Z.
+    // Overhead stays LAST (earlier owner's call): the buckets are few and easy to
+    // find by name, and on top they opened the list on the jobs least wanted.
+    const isOverhead = j => j.clockVisibility === "all" || j.clockVisibility === "admin";
+    const recentIds = [];
+    for (const id of [clockState.open?.job_id, ...(clockState.recent || []).map(r => r.job_id)]) {
+      if (id && !recentIds.includes(String(id))) recentIds.push(String(id));
+      if (recentIds.length >= 4) break;
+    }
+    const recentRank = j => { const i = recentIds.indexOf(String(j.id)); return i < 0 ? 99 : i; };
     const matched = (q
       ? jobs.filter(j => `${j.name || ""} ${j.po || ""}`.toLowerCase().includes(q))
       : jobs
-    ).sort((a, b) => rank(a) - rank(b) || (a.name || "").localeCompare(b.name || ""));
+    ).sort((a, b) => recentRank(a) - recentRank(b)
+                  || (isOverhead(a) ? 1 : 0) - (isOverhead(b) ? 1 : 0)
+                  || (a.name || "").localeCompare(b.name || "", undefined, { numeric: true }));
+    const nRecent = matched.filter(j => recentRank(j) < 99).length;
 
     // NO CAP, deliberately. There used to be a 60-row limit here; it was removed
     // because at ~112 jobs it protected against nothing a phone struggles with,
@@ -27194,7 +27202,9 @@
     const shown  = matched;
     const chosen = pick.jobId;
 
-    box.innerHTML = shown.length ? shown.map(j => `
+    box.innerHTML = shown.length ? shown.map((j, i) => `${
+      nRecent && i === 0 ? `<div class="clock-job-head">Recent</div>` : ""}${
+      nRecent && i === nRecent && i < shown.length ? `<div class="clock-job-head">All jobs A–Z</div>` : ""}
       <button type="button" class="clock-job${j.id === chosen ? " is-on" : ""}"
               onclick="clockPickJob('${esc(j.id)}','${esc(scope)}')">
         <span>${esc(j.name || j.id)}${
@@ -27301,7 +27311,7 @@
 
   function clockRow(label, value, kind, clearable, muted) {
     return `
-      <button type="button" class="clock-setting" onclick="clockDrillOpen('${kind}')">
+      <button type="button" class="clock-setting" data-kind="${kind}" onclick="clockDrillOpen('${kind}')">
         <span class="clock-setting-l">
           <span class="clock-setting-label">${esc(label)}</span>
           <span class="clock-setting-value${muted ? " is-muted" : ""}">${esc(value || "—")}</span>
@@ -27315,10 +27325,11 @@
   }
 
   // "Now" until you say otherwise — the common case needs no thought.
+  const clockNowLabel = () => new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   function clockStartLabel() {
-    if (!clockDraft.startedAt) return "Now";
+    if (!clockDraft.startedAt) return clockNowLabel();
     const d = new Date(clockDraft.startedAt);
-    if (isNaN(d)) return "Now";
+    if (isNaN(d)) return clockNowLabel();
     const t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const today = new Date();
     const sameDay = d.toDateString() === today.toDateString();
@@ -27615,11 +27626,11 @@
       el.innerHTML = `
         ${clockRejectedHtml()}
         <div class="clock-today">⚪ Clocked out · Today <b>${fmtHm(clockTodayMs())}</b></div>
-        ${clockRow("Start time", clockStartLabel(), "start", !!clockDraft.startedAt)}
         ${clockRow("Job", preJob ? (preJob.name || "") : "Tap to choose", "job", !!preJob)}
         ${clockRow("Class", cls, "class", false)}
         ${clockRow("City tax", city + (cls === CLOCK_TRAVEL_CLASS ? " · travel is always untaxed" : ""),
                    "city", false, cls === CLOCK_TRAVEL_CLASS)}
+        ${clockRow("Start time", clockStartLabel(), "start", !!clockDraft.startedAt)}
         <div style="height:14px;"></div>
         <button class="clock-btn clock-btn-in" onclick="clockIn()">Clock In</button>
         <button class="clock-btn clock-btn-travel" onclick="clockStartTravel()">🚗 Start Travel</button>

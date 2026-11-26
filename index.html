@@ -27175,7 +27175,8 @@
     const box = $(clockPickListId(scope)); if (!box) return;
     const { jobs, showingAll } = clockJobPool(scope);
     const q = pick.search.trim().toLowerCase();
-    // Owner 2026-11-25: your last 4 jobs on top, then everything A–Z.
+    // Owner 2026-11-25: your last 4 jobs on top, then Awarded A–Z, then
+    // Ready to invoice, Completed, the rest (each A–Z), overhead last.
     // Overhead stays LAST (earlier owner's call): the buckets are few and easy to
     // find by name, and on top they opened the list on the jobs least wanted.
     const isOverhead = j => j.clockVisibility === "all" || j.clockVisibility === "admin";
@@ -27184,12 +27185,17 @@
       if (id && !recentIds.includes(String(id))) recentIds.push(String(id));
       if (recentIds.length >= 4) break;
     }
+    const statusRank = j => {
+      if (isOverhead(j)) return 9;
+      const st = String(j.status || "").toLowerCase();
+      return st === "awarded" ? 0 : st === "ready to invoice" ? 1 : st === "completed" ? 2 : 3;
+    };
     const recentRank = j => { const i = recentIds.indexOf(String(j.id)); return i < 0 ? 99 : i; };
     const matched = (q
       ? jobs.filter(j => `${j.name || ""} ${j.po || ""}`.toLowerCase().includes(q))
       : jobs
     ).sort((a, b) => recentRank(a) - recentRank(b)
-                  || (isOverhead(a) ? 1 : 0) - (isOverhead(b) ? 1 : 0)
+                  || statusRank(a) - statusRank(b)
                   || (a.name || "").localeCompare(b.name || "", undefined, { numeric: true }));
     const nRecent = matched.filter(j => recentRank(j) < 99).length;
 
@@ -27204,7 +27210,7 @@
 
     box.innerHTML = shown.length ? shown.map((j, i) => `${
       nRecent && i === 0 ? `<div class="clock-job-head">Recent</div>` : ""}${
-      nRecent && i === nRecent && i < shown.length ? `<div class="clock-job-head">All jobs A–Z</div>` : ""}
+      nRecent && i === nRecent && i < shown.length ? `<div class="clock-job-head">All jobs</div>` : ""}
       <button type="button" class="clock-job${j.id === chosen ? " is-on" : ""}"
               onclick="clockPickJob('${esc(j.id)}','${esc(scope)}')">
         <span>${esc(j.name || j.id)}${

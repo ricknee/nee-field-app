@@ -1505,22 +1505,33 @@ async function handleClockStatus(params, authUser) {
   // since that instant. break_seconds is what has already been taken and closed.
   // The client needs both to show a frozen timer plus a running break.
   const open = await neonQuery(
-    `SELECT started_at, job_name, job_id, class, city_taxes, notes, client_punch_id,
-            break_seconds::float8 AS break_seconds, break_started_at,
-            original_started_at
-       FROM open_punches WHERE employee_id = $1`, [me.id]);
+    // job_id is the job's HANDLE (COALESCE(airtable_id, id)) — the id form the
+    // phone's job list uses. The raw uuid matched no legacy job on the phone.
+    `SELECT o.started_at, o.job_name,
+            CASE WHEN j.id IS NULL THEN NULL ELSE COALESCE(j.airtable_id, j.id::text) END AS job_id,
+            o.class, o.city_taxes, o.notes, o.client_punch_id,
+            o.break_seconds::float8 AS break_seconds, o.break_started_at,
+            o.original_started_at
+       FROM open_punches o LEFT JOIN jobs j ON j.id = o.job_id
+      WHERE o.employee_id = $1`, [me.id]);
 
   // Last 14 days. Enough to answer "did I forget to clock out on Tuesday" without
   // shipping a person's whole history to a phone on every open.
   const recent = await neonQuery(
-    `SELECT id, started_at, ended_at, work_date, duration_seconds::float8 AS duration_seconds,
-            break_seconds::float8 AS break_seconds,
-            job_name, class, city_taxes, (time_entry_id IS NOT NULL) AS counted,
-            (edited_at IS NOT NULL) AS edited
-       FROM clock_punches
-      WHERE employee_id = $1 AND work_date >= (CURRENT_DATE - 14)
-        AND deleted_at IS NULL
-      ORDER BY started_at DESC`, [me.id]);
+    // ⚠ job_id (2026-11-25): it was never sent, so "default to the job you last
+    // punched" and the picker's Recent list silently found nothing — and the
+    // job row opened on "Tap to choose", which is how a shift got punched with
+    // no job. Emitted as the handle, the phone's job-list id form.
+    `SELECT c.id, c.started_at, c.ended_at, c.work_date, c.duration_seconds::float8 AS duration_seconds,
+            c.break_seconds::float8 AS break_seconds,
+            c.job_name,
+            CASE WHEN j.id IS NULL THEN NULL ELSE COALESCE(j.airtable_id, j.id::text) END AS job_id,
+            c.class, c.city_taxes, (c.time_entry_id IS NOT NULL) AS counted,
+            (c.edited_at IS NOT NULL) AS edited
+       FROM clock_punches c LEFT JOIN jobs j ON j.id = c.job_id
+      WHERE c.employee_id = $1 AND c.work_date >= (CURRENT_DATE - 14)
+        AND c.deleted_at IS NULL
+      ORDER BY c.started_at DESC`, [me.id]);
 
   return resp(200, {
     ok: true,

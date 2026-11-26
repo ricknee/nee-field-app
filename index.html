@@ -27619,7 +27619,7 @@
       // Default the job to whatever the user is already standing in — the job they
       // have open — then the job they last punched against.
       if (!clockPick.jobId) {
-        clockPick.jobId = state.selected?.id || clockState.recent?.[0]?.job_id || "";
+        clockPick.jobId = state.selected?.id || (clockState.recent || []).find(r => r.job_id)?.job_id || "";
       }
       const preJob = (state.jobs || []).find(j => j.id === clockPick.jobId);
 
@@ -27950,6 +27950,8 @@
   // ── Punching ────────────────────────────────────────────────────────────
   async function clockIn() {
     if (clockBusy) return;
+    if (!clockPick.jobId &&
+        !confirm("No job is picked. Clock in with NO job?\n\nTap Cancel, then tap Job to choose one.")) return;
     clockBusy = true;
     try {
       // From clockDraft, not from dropdowns — the form is tap-in rows now, and a

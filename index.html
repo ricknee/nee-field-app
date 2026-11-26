@@ -1422,9 +1422,17 @@
     #slMapCanvas { flex: 1; min-height: 200px; }
     .sl-map-note { padding: 10px 16px; font-size: 13px; line-height: 1.5; max-height: 30vh; overflow-y: auto;
       border-top: 1px solid var(--line); background: var(--panel); }
-    .sl-pin { background: #ea580c; color: #fff; border: 2px solid #fff; border-radius: 50%;
-      box-shadow: 0 1px 4px rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center;
-      font-weight: 700; font-size: 14px; }
+    .sl-pin-wrap { background: none; border: none; }
+    /* Pill centred over the point, pointer at the bottom touching it. */
+    .sl-pin { position: absolute; left: 0; bottom: 8px; transform: translateX(-50%); white-space: nowrap;
+      background: #ea580c; color: #fff; border: 2px solid #fff; border-radius: 14px; padding: 3px 9px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.4); font-weight: 700; font-size: 14px; line-height: 1.2; }
+    .sl-pin::after { content: ""; position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%);
+      border: 6px solid transparent; border-top-color: #ea580c; border-bottom: 0; }
+    .sl-pop-lifts { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+    .sl-pop-lift { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 12px; font-weight: 600; }
+    .sl-pop-lift img, .sl-pop-noimg { width: 72px; height: 54px; object-fit: cover; border-radius: 6px; background: #f1f5f9;
+      display: flex; align-items: center; justify-content: center; font-size: 22px; }
     .sl-job-map { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-height: 0; }
     .sl-map-btn { flex: none; display: inline-block; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;
       background: var(--panel); border: 1px solid var(--line-2); color: var(--accent); text-decoration: none; }
@@ -19863,18 +19871,27 @@
       const byJob = new Map();
       lifts.filter(l => l.status === "On Job" && l.currentJob).forEach(l => {
         if (!byJob.has(l.currentJob)) byJob.set(l.currentJob, []);
-        byJob.get(l.currentJob).push(l.name);
+        byJob.get(l.currentJob).push(l);
       });
+      // "Lift #1" → "#1" on the pin; other equipment keeps its name.
+      const short = (n) => String(n || "").replace(/^lift\s*/i, "").trim() || String(n || "");
 
       const pts = (d.points || []).filter(p => p.lat != null && p.lng != null);
       const bounds = [];
       for (const p of pts) {
-        const names = byJob.get(p.job) || [];
-        const n = names.length || 1;
-        const icon = L.divIcon({ className: "sl-pin", html: `<span>${n}</span>`, iconSize: [30, 30], iconAnchor: [15, 15] });
+        const here = byJob.get(p.job) || [];
+        const names = here.map(l => l.name);
+        const label = here.map(l => short(l.name)).join(" · ") || "?";
+        // A label pill with a pointer; Leaflet sizes it from the content.
+        const icon = L.divIcon({ className: "sl-pin-wrap", html: `<div class="sl-pin">${esc(label)}</div>`,
+                                 iconSize: null, iconAnchor: [0, 0] });
+        const pics = here.map(l => {
+          const src = l.photoThumbUrl || l.photoUrl;
+          return `<div class="sl-pop-lift">${src ? `<img src="${esc(src)}" alt="" loading="lazy">` : `<div class="sl-pop-noimg">🏗</div>`}<span>${esc(l.name)}</span></div>`;
+        }).join("");
         const dir = "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(p.address);
         L.marker([p.lat, p.lng], { icon }).addTo(_liftMapLayer).bindPopup(
-          `<b>${esc(p.job)}</b><br>${names.map(esc).join(", ") || "—"}<br>
+          `<b>${esc(p.job)}</b><div class="sl-pop-lifts">${pics || "—"}</div>
            <span style="color:#64748b">${esc(p.address)}</span><br>
            ${p.approx ? `<span style="color:#b45309">≈ Pin is the town — the exact address wasn't found</span><br>` : ""}
            <a href="${esc(dir)}" target="_blank" rel="noopener">Open in Google Maps ›</a>`);

@@ -1406,7 +1406,7 @@
     .sl-card.open .sl-body { display:block; }
     #slModal .sl-body .sl-field { margin-top:8px; }
     #slModal .sl-field label { font-size:11px; }
-    #slModal .sl-field select, #slModal .sl-field input[type="text"], #slModal .sl-field input[type="date"] { font-size:15px; padding:9px 10px; border-radius:10px; }
+    #slModal .sl-field select, #slModal .sl-field input[type="text"], #slModal .sl-field input[type="search"], #slModal .sl-field input[type="date"] { font-size:15px; padding:9px 10px; border-radius:10px; }
     #slModal .sl-save-row { flex-wrap:wrap; }
     #slModal .sl-save-row .btn { width:auto; font-size:13px !important; }
     .sl-fix-box { margin:10px 0 4px; border:1px solid var(--line); border-radius:10px; background:var(--panel); overflow:hidden; }
@@ -19503,7 +19503,11 @@
   // can sit at a Completed job (Bethel School volunteer work) or at the shop
   // job. Grouped so the active ones stay on top. Not Awarded / lost bids are
   // left out unless they're overhead (Office Work) or the lift is already there.
-  function liftJobOptions(current) {
+  // q: typed in the box above the dropdown (owner 2026-11-26) — narrows the
+  // list by job name or PO. The lift's current job is always kept.
+  function liftJobOptions(current, q) {
+    const needle = String(q || "").trim().toLowerCase();
+    const hit = j => !needle || `${j.name || ""} ${j.po || ""}`.toLowerCase().includes(needle);
     const groups = [
       ["Awarded", j => /^(awarded|service call scheduled)$/i.test(j.status || "")],
       ["Shop & office", j => !!j.overhead],
@@ -19514,7 +19518,7 @@
     const used = new Set();
     let html = "";
     for (const [label, test] of groups) {
-      const list = (state.jobs || []).filter(j => j.name && !used.has(j.name) && test(j))
+      const list = (state.jobs || []).filter(j => j.name && !used.has(j.name) && test(j) && hit(j))
         .sort((a, b) => a.name.localeCompare(b.name));
       if (!list.length) continue;
       list.forEach(j => used.add(j.name));
@@ -19526,6 +19530,15 @@
     return html;
   }
   window.liftJobOptions = liftJobOptions;
+  window.liftJobFilter = function (inp) {
+    const sel = inp.parentElement.querySelector(".sl-job-input"); if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">— None —</option>` + liftJobOptions(cur, inp.value);
+    const n = sel.querySelectorAll("optgroup option").length;
+    const note = inp.parentElement.querySelector(".sl-job-count");
+    if (note) note.textContent = inp.value.trim()
+      ? (n ? `${n} job${n === 1 ? "" : "s"} match — tap the list below to pick` : "No jobs match") : "";
+  };
 
   function liftAssigneeOptions(assignees, current) {
     const opts = assignees.map(n => `<option value="${esc(n)}" ${current===n?"selected":""}>${esc(n)}</option>`);
@@ -20160,6 +20173,9 @@
             </div>
             <div class="sl-field">
               <label>Current Job</label>
+              <input type="search" class="sl-job-filter" placeholder="🔍 Type to search jobs…" autocomplete="off"
+                     enterkeyhint="done" oninput="liftJobFilter(this)" style="margin-bottom:6px;" />
+              <div class="sl-job-count" style="font-size:12px; color:var(--muted); margin:-2px 0 4px;"></div>
               <select data-lift-id="${esc(lift.id)}" class="sl-job-input">
                 <option value="">— None —</option>
                 ${liftJobOptions(lift.currentJob)}

@@ -1052,6 +1052,13 @@
     .gnd-note b { color:var(--text); }
     .gnd-cap { border-left-color:var(--yellow); }
 
+    /* ── FAULT CURRENT TAB ── */
+    .fc-check { display:flex; align-items:center; gap:8px; font-size:13px; margin-top:8px; color:var(--text); }
+    .fc-run { border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:8px; background:var(--panel); }
+    .fc-run-head { display:flex; gap:8px; margin-bottom:6px; }
+    .fc-run-head input { flex:1; min-width:0; font-weight:600; }
+    #fcRes td:first-child { text-align:left; white-space:normal; }
+
     /* ── GENERATORS TAB ── */
     .gen-quick { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
     .gen-chip {
@@ -36385,6 +36392,153 @@
     vdRender();
   }
 
+  // ── FAULT CURRENT (owner 2026-11-27) ───────────────────────────────────
+  // Available fault current at the transformer — from the utility's letter, or
+  // kVA and %Z (infinite primary: full-load amps ÷ %Z) — then carried down a
+  // chain of runs by Bussmann's point-to-point method. Checked against AEP's
+  // letter for 7150 Columbus Rd: 75 kVA, 208 V 3φ, 1.5 %Z → 13,879 A, to the amp.
+  // Scratch only, kept on this device (localStorage), like the Load Calc scratch.
+  //
+  // C values — Bussmann/Eaton SPD handbook, 600 V, three single conductors.
+  // [steel conduit, nonmagnetic conduit] per size in VD_SIZES order.
+  const FC_C = {
+    cu: [[389,389],[617,617],[981,982],[1557,1559],[2425,2430],[3806,3826],[4774,4811],[5907,6044],
+         [7293,7493],[8925,9317],[10755,11423],[12844,13923],[15082,16673],[16483,18559],[18177,20817],
+         [19704,22926],[20566,24732],[22185,27999],[22965,30140],[24137,33666],[25278,37372]],
+    al: [[237,237],[376,376],[599,599],[951,952],[1481,1482],[2346,2350],[2952,2961],[3713,3730],
+         [4645,4678],[5777,5838],[7187,7301],[8826,9110],[10741,11174],[12122,12862],[13910,14923],
+         [15484,16813],[16671,18506],[18756,21391],[20093,23451],[21766,25976],[23478,28779]],
+  };
+  const FC_KEY = "nee_fault_calc_v1";
+  const fcNewRun = (i) => ({ name: i === 0 ? "Service disconnect" : "Panel " + (i + 1), len: "", size: "#3/0",
+                             mat: "cu", cond: "steel", sets: "1", rating: "" });
+  let fcState = { src: "utility", sys: "208-3", util: "", kva: "", z: "", tol: false, runs: [fcNewRun(0)] };
+  try { const saved = JSON.parse(localStorage.getItem(FC_KEY) || "null"); if (saved && Array.isArray(saved.runs)) fcState = { ...fcState, ...saved }; } catch {}
+  function fcSave() { try { localStorage.setItem(FC_KEY, JSON.stringify(fcState)); } catch {} }
+  const fcNum = (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+  const fcFmt = (a) => Math.round(a).toLocaleString() + " A";
+
+  // Fault current at the transformer, or 0 if not enough is filled in.
+  function fcSourceAmps() {
+    const [v, ph] = fcState.sys.split("-").map(Number);
+    if (fcState.src === "utility") return { amps: fcNum(fcState.util), v, ph };
+    const kva = fcNum(fcState.kva), z = fcNum(fcState.z) * (fcState.tol ? 0.9 : 1);
+    if (!kva || !z) return { amps: 0, v, ph };
+    const fla = kva * 1000 / (ph === 3 ? v * Math.sqrt(3) : v);
+    return { amps: fla * 100 / z, v, ph, fla, z };
+  }
+
+  function fcRunsHtml() {
+    const sizes = VD_SIZES.map(sz => `<option value="${esc(sz)}">${esc(sz)}${/^\d/.test(sz) ? " kcmil" : ""}</option>`).join("");
+    const sets = [1,2,3,4,5,6,8].map(n => `<option value="${n}">${n === 1 ? "1 set" : n + " sets"}</option>`).join("");
+    $("fcRuns").innerHTML = fcState.runs.map((r, i) => `
+      <div class="fc-run" data-i="${i}">
+        <div class="fc-run-head">
+          <input class="edit-input" data-k="name" value="${esc(r.name)}" placeholder="What's at the end (e.g. Panel A)" />
+          ${fcState.runs.length > 1 ? `<button type="button" class="btn btn-sm" data-del="${i}" title="Remove">✕</button>` : ""}
+        </div>
+        <div class="gnd-row">
+          <input class="edit-input" data-k="len" type="number" inputmode="decimal" min="0" step="1" value="${esc(r.len)}" placeholder="Length (ft)" />
+          <select class="edit-input" data-k="size">${sizes}</select>
+          <select class="edit-input" data-k="sets">${sets}</select>
+        </div>
+        <div class="gnd-row" style="margin-top:6px;">
+          <select class="edit-input" data-k="mat"><option value="cu">Copper</option><option value="al">Aluminum</option></select>
+          <select class="edit-input" data-k="cond"><option value="steel">Steel conduit</option><option value="pvc">PVC / aluminum conduit</option></select>
+          <input class="edit-input" data-k="rating" type="number" inputmode="decimal" min="0" step="any" value="${esc(r.rating)}" placeholder="Equipment rating (kA)" />
+        </div>
+      </div>`).join("");
+    $("fcRuns").querySelectorAll(".fc-run").forEach(el => {
+      const r = fcState.runs[+el.dataset.i];
+      el.querySelectorAll("select[data-k]").forEach(sel => { sel.value = r[sel.dataset.k]; });
+    });
+  }
+
+  function fcRender() {
+    $("fcUtilRow").style.display = fcState.src === "utility" ? "" : "none";
+    $("fcXfmrRow").style.display = fcState.src === "xfmr" ? "" : "none";
+    document.querySelectorAll("#fcSrc label").forEach(l => l.classList.toggle("on", l.querySelector("input").checked));
+    const src = fcSourceAmps();
+    const box = $("fcSource");
+    if (!src.amps) {
+      $("fcSrcOut").textContent = "—";
+      $("fcSrcSub").textContent = fcState.src === "utility"
+        ? "Enter the number from the utility's letter."
+        : "Enter the transformer kVA and %Z.";
+      $("fcResWrap").style.display = "none";
+      box.className = "cf-verdict";
+      return;
+    }
+    $("fcSrcOut").textContent = fcFmt(src.amps);
+    $("fcSrcSub").textContent = fcState.src === "xfmr"
+      ? `Full-load ${fcFmt(src.fla)} ÷ ${+src.z.toFixed(3)}%${fcState.tol ? " (nameplate less 10%)" : ""}. Assumes the utility side can supply unlimited current — the worst case.`
+      : "As given by the utility.";
+    box.className = "cf-verdict ok";
+
+    // Down the chain.
+    let amps = src.amps;
+    const rows = [];
+    for (const r of fcState.runs) {
+      const L = fcNum(r.len), n = fcNum(r.sets) || 1;
+      const idx = VD_SIZES.indexOf(r.size);
+      const C = FC_C[r.mat]?.[idx]?.[r.cond === "steel" ? 0 : 1];
+      if (!L || !C) { rows.push({ r, amps: null }); break; }
+      const fct = (src.ph === 3 ? Math.sqrt(3) : 2) * L * amps / (C * n * src.v);
+      amps = amps / (1 + fct);
+      rows.push({ r, amps });
+    }
+    const body = rows.map(({ r, amps: a }) => {
+      if (a == null) return `<tr><td>${esc(r.name || "—")}</td><td colspan="2" style="color:var(--muted)">Enter a length</td></tr>`;
+      const kA = fcNum(r.rating);
+      const ok = kA ? a <= kA * 1000 : null;
+      const verdict = ok == null ? "—" : ok ? `<span style="color:var(--green);font-weight:700">✓ ${kA} kA OK</span>`
+                                           : `<span style="color:var(--red);font-weight:700">✗ ${kA} kA too low</span>`;
+      return `<tr><td>${esc(r.name || "—")}<br><span style="color:var(--muted);font-size:11px">${esc(r.len)} ft ${esc(r.size)} ${r.mat === "al" ? "Al" : "Cu"}${+r.sets > 1 ? " ×" + esc(r.sets) : ""}</span></td>
+               <td><b>${fcFmt(a)}</b></td><td>${verdict}</td></tr>`;
+    }).join("");
+    $("fcRes").innerHTML = `<tr><th>Point</th><th>Fault current</th><th>Rated</th></tr>${body}`;
+    $("fcResWrap").style.display = "";
+  }
+
+  function fcBuild() {
+    $("fcSys").value = fcState.sys;
+    $("fcUtilA").value = fcState.util; $("fcKva").value = fcState.kva; $("fcZ").value = fcState.z;
+    $("fcTol").checked = !!fcState.tol;
+    document.querySelectorAll('#fcSrc input').forEach(i => { i.checked = i.value === fcState.src; });
+    $("fcSrc").addEventListener("change", (e) => { fcState.src = e.target.value; fcSave(); fcRender(); });
+    [["fcSys","sys"],["fcUtilA","util"],["fcKva","kva"],["fcZ","z"]].forEach(([id, k]) =>
+      $(id).addEventListener("input", (e) => { fcState[k] = e.target.value; fcSave(); fcRender(); }));
+    $("fcTol").addEventListener("change", (e) => { fcState.tol = e.target.checked; fcSave(); fcRender(); });
+    const onRun = (e) => {
+      const el = e.target.closest(".fc-run"), k = e.target.dataset.k;
+      if (!el || !k) return;
+      fcState.runs[+el.dataset.i][k] = e.target.value; fcSave(); fcRender();
+    };
+    $("fcRuns").addEventListener("input", onRun);
+    $("fcRuns").addEventListener("change", onRun);
+    $("fcRuns").addEventListener("click", (e) => {
+      const d = e.target.closest("[data-del]");
+      if (!d) return;
+      fcState.runs.splice(+d.dataset.del, 1); fcSave(); fcRunsHtml(); fcRender();
+    });
+    $("fcAdd").addEventListener("click", () => {
+      const last = fcState.runs[fcState.runs.length - 1];
+      fcState.runs.push({ ...fcNewRun(fcState.runs.length), mat: last?.mat || "cu", cond: last?.cond || "steel" });
+      fcSave(); fcRunsHtml(); fcRender();
+    });
+    $("fcClear").addEventListener("click", () => {
+      if (!confirm("Clear the fault current calculation?")) return;
+      fcState = { src: fcState.src, sys: fcState.sys, util: "", kva: "", z: "", tol: false, runs: [fcNewRun(0)] };
+      fcSave(); fcBuild2();
+    });
+    fcRunsHtml(); fcRender();
+  }
+  // Re-fill the inputs after Clear without re-adding the listeners.
+  function fcBuild2() {
+    $("fcUtilA").value = ""; $("fcKva").value = ""; $("fcZ").value = ""; $("fcTol").checked = false;
+    fcRunsHtml(); fcRender();
+  }
+
   // ── TAB 7: LOAD CALC ──────────────────────────────────────────────────
   // A service / feeder load calculation the NEC way — Article 220 Part III,
   // the standard method for a non-dwelling building — and a generator size,
@@ -37362,14 +37516,14 @@
         try { b.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch {}
       }
     });
-    ["fill","grounding","ampacity","vdrop","motors","generators","loadcalc"].forEach(k => {
+    ["fill","grounding","ampacity","vdrop","fault","motors","generators","loadcalc"].forEach(k => {
       const p = $("chartPanel-" + k);
       if (p) p.style.display = (k === id) ? "" : "none";
     });
   }
 
   function openCharts() {
-    if (!cfState._built) { cfBuild(); gndBuild(); ampBuild(); vdBuild(); motBuild(); genBuild(); lcBuild(); cfState._built = true; }
+    if (!cfState._built) { cfBuild(); gndBuild(); ampBuild(); vdBuild(); fcBuild(); motBuild(); genBuild(); lcBuild(); cfState._built = true; }
     // Opened from the top bar, Load Calc is the scratchpad. openJobLoadCalc
     // calls this first and then switches into job mode itself.
     if (lcState.mode === "job") {
@@ -38108,6 +38262,7 @@
       <button type="button" class="chart-tab" data-chart="grounding">Grounding</button>
       <button type="button" class="chart-tab" data-chart="ampacity">Ampacity</button>
       <button type="button" class="chart-tab" data-chart="vdrop">Voltage Drop</button>
+      <button type="button" class="chart-tab" data-chart="fault">Fault Current</button>
       <button type="button" class="chart-tab" data-chart="motors">Motors</button>
       <button type="button" class="chart-tab" data-chart="generators">Generators</button>
       <button type="button" class="chart-tab" data-chart="loadcalc">Load Calc</button>
@@ -38377,6 +38532,60 @@
         They are still what the drawings usually call for.<br />
         If you <b>do</b> upsize the ungrounded conductors for voltage drop, <b>250.122(B)</b> says the
         equipment grounding conductor has to grow in the same proportion. That one <i>is</i> code.
+      </div>
+    </div>
+    <!-- ── FAULT CURRENT (owner 2026-11-27) ── -->
+    <div id="chartPanel-fault" style="display:none;">
+      <div class="gnd-switch" id="fcSrc">
+        <label class="on"><input type="radio" name="fcSrc" value="utility" checked /> Utility's number</label>
+        <label><input type="radio" name="fcSrc" value="xfmr" /> Transformer kVA + %Z</label>
+      </div>
+      <div class="gnd-row">
+        <select id="fcSys" class="edit-input">
+          <option value="208-3">120/208 V three phase</option>
+          <option value="480-3">277/480 V three phase</option>
+          <option value="240-3">240 V three phase</option>
+          <option value="240-1">120/240 V single phase</option>
+        </select>
+      </div>
+      <div class="gnd-row" id="fcUtilRow" style="margin-top:8px;">
+        <input id="fcUtilA" class="edit-input" type="number" inputmode="decimal" min="0" step="1"
+               placeholder="Fault current at the transformer (amps)" />
+      </div>
+      <div id="fcXfmrRow" style="display:none; margin-top:8px;">
+        <div class="gnd-row">
+          <input id="fcKva" class="edit-input" type="number" inputmode="decimal" min="0" step="any" placeholder="Transformer kVA" />
+          <input id="fcZ"   class="edit-input" type="number" inputmode="decimal" min="0" step="any" placeholder="Impedance %Z" />
+        </div>
+        <label class="fc-check"><input type="checkbox" id="fcTol" /> Worst case — take 10% off the impedance (nameplate tolerance)</label>
+      </div>
+
+      <div class="cf-verdict" id="fcSource" style="margin-top:14px;">
+        <div>At the transformer: <strong id="fcSrcOut">—</strong></div>
+        <div class="cf-sub" id="fcSrcSub">Enter the utility's number, or the transformer kVA and %Z.</div>
+      </div>
+
+      <div class="cf-section-title">Runs — each one starts where the last one ends</div>
+      <div id="fcRuns"></div>
+      <div class="cf-actions" style="margin-top:8px;">
+        <button type="button" class="btn" id="fcAdd">+ Add a run</button>
+        <button type="button" class="btn" id="fcClear">Clear</button>
+      </div>
+
+      <div class="gnd-wrap" id="fcResWrap" style="display:none;"><table class="gnd-table" id="fcRes"></table></div>
+
+      <div class="gnd-note">
+        <b>110.24(A)</b> — service equipment, other than in dwelling units, has to be field marked with the
+        maximum available fault current and the date it was figured. <b>110.9 / 110.10</b> — every breaker,
+        fuse and panel has to be rated for the fault current available where it sits.
+      </div>
+      <div class="gnd-note">
+        <b>How it's worked:</b> Bussmann's point-to-point method with its "C" values for 600 V copper or
+        aluminum, three single conductors in steel or nonmagnetic (PVC/aluminum) conduit. Three phase:
+        f = 1.732 × L × I ÷ (C × sets × V). Single phase line-to-line: f = 2 × L × I ÷ (C × sets × V).
+        Fault at the end of the run = I × 1 ÷ (1 + f).<br />
+        <b>Not added:</b> motor contribution (Bussmann adds about 4 × the full-load amps of motors running).
+        A utility number can change when they change their system — the letter says so.
       </div>
     </div>
     <!-- ── MOTORS ── -->
